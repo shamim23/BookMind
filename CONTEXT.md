@@ -66,7 +66,7 @@ The project uses a **React + FastAPI** architecture:
 │   │   └── FloatingDock.tsx
 │   ├── pages/                     # Page components
 │   │   ├── LibraryPage.tsx
-│   │   ├── AnalyzeBookPage.tsx
+│   │   ├── AnalyzeBookPage.tsx    # UPDATED: Now uses DB, saves insights!
 │   │   ├── PowerReaderPage.tsx
 │   │   ├── DashboardPage.tsx
 │   │   ├── KnowledgeGraphPage.tsx
@@ -100,13 +100,18 @@ The project uses a **React + FastAPI** architecture:
 │   │   │   ├── dialectic_fallbacks.py # Dialectic analyses
 │   │   │   ├── evidence_mappings.py   # Evidence data
 │   │   │   └── sample_books.py        # Sample books
+│   │   ├── db/                    # NEW: Database layer
+│   │   │   ├── __init__.py
+│   │   │   ├── database.py        # SQLAlchemy engine & session
+│   │   │   ├── models.py          # SQLAlchemy models (Book, Chapter, Insight)
+│   │   │   └── crud.py            # CRUD operations
 │   │   ├── models/
 │   │   │   ├── __init__.py
 │   │   │   └── schemas.py         # Pydantic models
 │   │   ├── routers/               # API endpoints
 │   │   │   ├── __init__.py
 │   │   │   ├── books.py           # Book upload & sample books
-│   │   │   ├── analysis.py        # AI analysis endpoints
+│   │   │   ├── analysis.py        # AI analysis endpoints (NOW SAVES TO DB!)
 │   │   │   ├── mappings.py        # Concept & evidence mappings
 │   │   │   └── news.py            # News endpoints
 │   │   ├── services/              # Business logic
@@ -115,10 +120,12 @@ The project uses a **React + FastAPI** architecture:
 │   │   │   ├── file_service.py    # PDF/EPUB/TXT processing
 │   │   │   └── news_service.py    # News matching
 │   │   └── main.py                # FastAPI app entry
+│   ├── data/                      # NEW: SQLite database storage
 │   ├── requirements.txt           # Python dependencies
 │   ├── .env.example               # Backend env template
 │   ├── run.py                     # Run from project root
 │   ├── run_direct.py              # Run from backend dir
+│   ├── init_db.py                 # NEW: Initialize database
 │   └── README.md                  # Backend docs
 │
 ├── index.html                     # HTML entry
@@ -148,10 +155,16 @@ The project uses a **React + FastAPI** architecture:
    - Pre-processed content
 
 3. **AI Analysis** (Backend API)
-   - `POST /analysis/insights` - Generate chapter insights
+   - `POST /analysis/insights` - Generate chapter insights (SAVED TO DB!)
+   - `GET /analysis/insights/chapter/{id}` - Retrieve saved insights
    - `POST /analysis/first-principles` - First principles breakdown
    - `POST /analysis/dialectic` - Thesis-antithesis-synthesis
    - `POST /analysis/chat` - AI Q&A
+   
+4. **Database Persistence** (NEW!)
+   - Books synced to database with chapters
+   - Insights automatically saved when generated
+   - Retrieve saved insights on chapter reload (no regeneration!)
 
 4. **Cross-Domain Concept Mapping**
    - Hardcoded mappings for key concepts
@@ -174,6 +187,8 @@ The project uses a **React + FastAPI** architecture:
 | OpenAI calls | ✅ (legacy) | ✅ (active) | API key now in backend |
 | File processing | ✅ | ✅ | Backend handles PDF/EPUB/TXT |
 | API client | ✅ NEW | N/A | `src/services/api.ts` |
+| Database | ✅ | ✅ | SQLite with SQLAlchemy |
+| Insights Persistence | ✅ | ✅ | Auto-save to DB |
 
 ### ⚠️ Legacy Code (Still in Frontend)
 
@@ -183,6 +198,29 @@ These files still exist in frontend but are superseded by backend:
 - `src/services/dialectic.ts` - Use backend `/analysis/dialectic`
 - `src/services/evidenceMapping.ts` - Use backend `/mappings/evidence`
 - `src/services/newsApi.ts` - Use backend `/news/find`
+
+### 🗄️ Database (NEW!)
+
+SQLite database for persisting books, chapters, and AI insights.
+
+**Models:**
+- `Book` - Book metadata and content
+- `Chapter` - Chapter content and summaries
+- `Insight` - AI-generated insights (saved per chapter)
+- `UserBook` - User reading progress (placeholder for auth)
+- `Note` - User notes and highlights (placeholder for auth)
+
+**Key Features:**
+- Insights are automatically saved when generated (`save_to_db: true`)
+- Retrieve saved insights: `GET /analysis/insights/chapter/{id}`
+- Update insights: `PUT /analysis/insights/{id}` (marks as user-edited)
+- Delete insights: `DELETE /analysis/insights/{id}`
+
+**Initialize Database:**
+```bash
+cd /Users/shamim/Documents/Tech/Apps/Education/app/backend
+python init_db.py
+```
 
 ## Environment Setup
 
@@ -236,17 +274,28 @@ start-dev.bat
 |----------|--------|-------------|
 | `/` | GET | API info |
 | `/health` | GET | Health check |
+| **Books** |||
 | `/books/sample` | GET | List sample books |
-| `/books/sample/{id}` | GET | Get specific book |
+| `/books/sample/{id}` | GET | Get specific sample book |
+| `/books/sample/sync/{id}` | POST | Sync sample book to DB |
+| `/books/{id}` | GET | Get book from database |
+| `/books/{id}/chapters` | GET | Get book chapters |
 | `/books/categories` | GET | List categories |
 | `/books/upload` | POST | Upload book file |
-| `/analysis/insights` | POST | Generate insights |
+| **Analysis** |||
+| `/analysis/insights` | POST | Generate & save insights |
+| `/analysis/insights/chapter/{id}` | GET | Get saved chapter insights |
+| `/analysis/insights/book/{id}` | GET | Get saved book insights |
+| `/analysis/insights/{id}` | PUT | Update insight |
+| `/analysis/insights/{id}` | DELETE | Delete insight |
 | `/analysis/first-principles` | POST | First principles |
 | `/analysis/dialectic` | POST | Dialectical analysis |
 | `/analysis/chat` | POST | AI chat |
+| **Mappings** |||
 | `/mappings/concepts/find` | POST | Find concept mappings |
 | `/mappings/concepts/book/{id}` | GET | Get book concepts |
 | `/mappings/evidence` | POST | Get evidence mapping |
+| **News** |||
 | `/news/find` | POST | Find relevant news |
 
 ## Data Migrated to Backend
@@ -280,14 +329,18 @@ start-dev.bat
 
 ## Next Steps / TODOs
 
-1. **Frontend Integration**: Update frontend components to use `api.ts` instead of legacy services
-2. **OpenAI Key**: Add to backend `.env` to enable AI features
-3. **User Features**: Add auth, saved books, reading progress (needs DB)
-4. **Caching**: Add Redis for AI response caching
-5. **Vector Search**: Add embeddings for semantic search
-6. **Real News**: Replace hardcoded news with NewsAPI or similar
-7. **Tests**: Add unit tests for backend services
-8. **Deployment**: Docker setup, cloud deployment config
+### ✅ Completed
+1. ~~**Frontend Integration**: Update frontend components to use `api.ts`~~ DONE
+2. ~~**OpenAI Key**: Add to backend `.env` to enable AI features~~ (Setup ready, just add key)
+3. ~~**Database**: SQLite with SQLAlchemy for insights persistence~~ DONE
+
+### 🔄 In Progress / Next
+4. **User Features**: Add auth, saved books, reading progress (DB ready, need auth)
+5. **Caching**: Add Redis for AI response caching
+6. **Vector Search**: Add embeddings for semantic search
+7. **Real News**: Replace hardcoded news with NewsAPI or similar
+8. **Tests**: Add unit tests for backend services
+9. **Deployment**: Docker setup, cloud deployment config
 
 ## Important Notes
 
@@ -304,6 +357,39 @@ start-dev.bat
 - **Backend URL**: http://localhost:8000
 - **API Docs**: http://localhost:8000/docs
 - **Last Updated**: 2026-01-31
+
+## Current Status Summary (2026-01-31)
+
+### ✅ What's Working
+1. **Backend API**: All endpoints functional with SQLite database
+2. **Database**: Books, Chapters, Insights models with full CRUD
+3. **AI Insights**: Generated, saved to DB, and retrieved on reload
+4. **Frontend**: Updated to use new API with DB sync status indicator
+5. **Sample Books**: Auto-sync to DB when opened in AnalyzeBookPage
+6. **Chapter Content**: Fixed - chapters now store full content in DB
+
+### 🧪 Test It
+1. Open `AnalyzeBookPage` with a sample book: `/analyze?book=economics-1`
+2. Wait for "Syncing book to database..." to complete
+3. Click "Insights" tab - insights will generate and save
+4. Refresh page - insights load instantly from DB (no regeneration!)
+5. Look for the green "Saved" badge with database icon
+
+### 📁 Database Location
+```
+backend/data/bookmind.db  (SQLite file)
+```
+
+### 🔧 To Enable Real AI (not fallback)
+Add to `backend/.env`:
+```
+OPENAI_API_KEY=sk-your-key-here
+```
+
+### 🐛 Recent Fixes
+- **Fixed**: Chapter content not being returned by API (added `content` field to `/books/{id}/chapters`)
+- **Fixed**: Chapter detection in `file_service.py` now handles markdown headers properly
+- **Fixed**: Book sync now properly stores chapter content in database
 
 ---
 

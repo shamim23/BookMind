@@ -2,17 +2,33 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 from app.core.config import get_settings
 from app.routers import books, analysis, mappings, news
+from app.db.database import init_db
 
 settings = get_settings()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Lifespan context manager for startup/shutdown events."""
+    # Startup
+    print("🚀 Starting up BookMind AI API...")
+    init_db()
+    print("✅ Database initialized")
+    yield
+    # Shutdown
+    print("🛑 Shutting down...")
+
 
 app = FastAPI(
     title=settings.APP_NAME,
     description="AI-powered book learning platform backend API",
     version="1.0.0",
     debug=settings.DEBUG,
+    lifespan=lifespan,
 )
 
 # CORS middleware

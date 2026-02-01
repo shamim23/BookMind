@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   BookOpen, 
@@ -22,27 +22,30 @@ import {
   AlertTriangle,
   CheckCircle2,
   Lightbulb,
-  ArrowRightLeft
+  ArrowRightLeft,
+  Database,
+  RefreshCw
 } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { sampleBooks, convertToFullBook } from '@/data/sampleBooks';
-import { generateInsights, generateFirstPrinciples, generateAIResponse } from '@/services/openai';
-import { findRelevantNews } from '@/services/newsApi';
-import { generateDialecticalAnalysis, type DialecticalAnalysis } from '@/services/dialectic';
+import { 
+  generateInsights, 
+  generateFirstPrinciples, 
+  generateAIResponse,
+  generateDialecticalAnalysis,
+  findRelevantNews,
+  getChapterInsights,
+  syncSampleBook,
+  getBook as getBookFromDB,
+  getBookChapters
+} from '@/services/api';
 import CrossDomainMapping from '@/components/CrossDomainMapping';
 import EvidenceMapping from '@/components/EvidenceMapping';
-import type { Book, Chapter } from '@/types';
+import type { Book, Chapter, Insight } from '@/types';
 import { Link, useSearchParams } from 'react-router-dom';
-
-interface Insight {
-  title: string;
-  summary: string;
-  evidence: string;
-  implication: string;
-}
 
 interface NewsArticle {
   title: string;
@@ -58,6 +61,12 @@ interface ChatMessage {
   content: string;
 }
 
+interface DBSyncStatus {
+  isSynced: boolean;
+  dbBookId?: string;
+  isLoading: boolean;
+}
+
 export default function AnalyzeBookPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const bookId = searchParams.get('book');
@@ -69,11 +78,14 @@ export default function AnalyzeBookPage() {
   const [readingProgress, setReadingProgress] = useState(0);
   const contentRef = useRef<HTMLDivElement>(null);
   
+  // Database sync status
+  const [dbSync, setDbSync] = useState<DBSyncStatus>({ isSynced: false, isLoading: false });
+  
   // AI-generated content
   const [insights, setInsights] = useState<Insight[]>([]);
   const [firstPrinciples, setFirstPrinciples] = useState<any>(null);
   const [newsArticles, setNewsArticles] = useState<NewsArticle[]>([]);
-  const [dialecticAnalysis, setDialecticAnalysis] = useState<DialecticalAnalysis | null>(null);
+  const [dialecticAnalysis, setDialecticAnalysis] = useState<any>(null);
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
   const [isLoadingPrinciples, setIsLoadingPrinciples] = useState(false);
   const [isLoadingNews, setIsLoadingNews] = useState(false);
@@ -87,22 +99,203 @@ export default function AnalyzeBookPage() {
   // Active AI tab
   const [activeTab, setActiveTab] = useState<'insights' | 'principles' | 'news' | 'chat' | 'dialectic'>('insights');
 
-  // Load book and chapter
+  // Sync sample book to database and load chapters
   useEffect(() => {
-    if (bookId) {
+    const loadBookFromDB = async () => {
+      if (!bookId) return;
+      
+      // Check if it's a sample book
       const sampleBook = sampleBooks.find(b => b.id === bookId);
-      if (sampleBook) {
+      if (!sampleBook) {
+        // For uploaded books, try to load from DB directly
+        try {
+          const dbBook: Book = await getBookFromDB(bookId);
+          setBook(dbBook);
+          const chapter = dbBook.chapters.find((c: Chapter) => c.number === chapterNum) || dbBook.chapters[0];
+          setSelectedChapter(chapter);
+          setDbSync({ isSynced: true, dbBookId: bookId, isLoading: false });
+        } catch (error) {
+          console.error('Failed to load book:', error);
+        }
+        return;
+      }
+      
+      // For sample books, sync to DB first
+      setDbSync({ isSynced: false, isLoading: true });
+      
+      try {
+        // Sync sample book to database
+        const syncResult: { message: string; book_id: string; chapters_count: number } = await syncSampleBook(bookId);
+        
+        // Load the book with chapters from DB
+        const dbChapters: any[] = await getBookChapters(syncResult.book_id);
+        
+        // Convert to Book format
+        const fullBook: Book = {
+          id: syncResult.book_id,
+          title: sampleBook.title,
+          author: sampleBook.author,
+          content: sampleBook.content,
+          chapters: dbChapters.map((c: any) => ({
+            id: c.id,
+            number: c.number,
+            title: c.title,
+            content: '', // Will be loaded when needed
+            summary: c.summary,
+            keyPoints: c.key_points || [],
+            startIndex: 0,
+            endIndex: 0,
+            concepts: []
+          })),
+          concepts: [],
+          uploadedAt: new Date(),
+          category: sampleBook.category
+        };
+        
+        // Load full chapter content and summary from sample book
+        const sampleFullBook = convertToFullBook(sampleBook);
+        fullBook.chapters = fullBook.chapters.map((ch: Chapter) => {
+          const sampleChapter = sampleFullBook.chapters.find(sc => sc.number === ch.number);
+          return {
+            ...ch,
+            content: sampleChapter?.content || '',
+            summary: sampleChapter?.summary || ch.summary,
+            keyPoints: sampleChapter?.keyPoints || ch.keyPoints
+          };
+        });
+        
+        setBook(fullBook);
+        setDbSync({ isSynced: true, dbBookId: syncResult.book_id, isLoading: false });
+        
+        // Select chapter
+        const chapter = fullBook.chapters.find((c: Chapter) => c.number === chapterNum) || fullBook.chapters[0];
+        setSelectedChapter(chapter);
+        
+      } catch (error) {
+        console.error('Failed to sync book:', error);
+        // Fallback to sample book without DB
         const fullBook = convertToFullBook(sampleBook);
         setBook(fullBook);
         const chapter = fullBook.chapters.find(c => c.number === chapterNum) || fullBook.chapters[0];
         setSelectedChapter(chapter);
+        setDbSync({ isSynced: false, isLoading: false });
       }
-    }
+    };
+    
+    loadBookFromDB();
   }, [bookId, chapterNum]);
+
+  // Define load functions before useEffect that depends on them
+  const loadInsights = useCallback(async (chapter: Chapter) => {
+    if (!chapter.id) return;
+    
+    setIsLoadingInsights(true);
+    try {
+      // 1. First, try to get saved insights from database
+      const savedInsights: { insights: Insight[]; total: number; chapter_id: string } = await getChapterInsights(chapter.id);
+      
+      if (savedInsights.insights.length > 0) {
+        console.log(`Loaded ${savedInsights.insights.length} saved insights for chapter ${chapter.number}`);
+        setInsights(savedInsights.insights);
+        setIsLoadingInsights(false);
+        return;
+      }
+      
+      // 2. No saved insights - generate new ones
+      console.log('No saved insights found, generating new...');
+      
+      const insightsData: Insight[] = await generateInsights({
+        chapterTitle: chapter.title,
+        chapterContent: chapter.content,
+        chapterSummary: chapter.summary || '',
+        bookTitle: book?.title || '',
+        bookAuthor: book?.author || '',
+        bookId: book?.id,
+        chapterId: chapter.id,
+        saveToDb: true
+      });
+      
+      setInsights(insightsData);
+    } catch (error) {
+      console.error('Failed to load insights:', error);
+    } finally {
+      setIsLoadingInsights(false);
+    }
+  }, [book]);
+
+  const loadFirstPrinciples = useCallback(async () => {
+    if (!selectedChapter) return;
+    setIsLoadingPrinciples(true);
+    try {
+      const principles = await generateFirstPrinciples(
+        selectedChapter.title,
+        selectedChapter.content,
+        selectedChapter.title
+      );
+      setFirstPrinciples(principles);
+    } catch (error) {
+      console.error('Failed to load first principles:', error);
+    } finally {
+      setIsLoadingPrinciples(false);
+    }
+  }, [selectedChapter]);
+
+  const loadNews = useCallback(async (chapter: Chapter) => {
+    setIsLoadingNews(true);
+    try {
+      const news: NewsArticle[] = await findRelevantNews(chapter.title, chapter.content);
+      setNewsArticles(news);
+    } catch (error) {
+      console.error('Failed to load news:', error);
+    } finally {
+      setIsLoadingNews(false);
+    }
+  }, []);
+
+  const loadDialectic = useCallback(async (chapter: Chapter) => {
+    if (!book) return;
+    setIsLoadingDialectic(true);
+    try {
+      const analysis = await generateDialecticalAnalysis(
+        chapter.title,
+        chapter.content,
+        book.title,
+        book.author || 'Unknown'
+      );
+      setDialecticAnalysis(analysis);
+    } catch (error) {
+      console.error('Failed to load dialectic analysis:', error);
+    } finally {
+      setIsLoadingDialectic(false);
+    }
+  }, [book]);
+
+  const handleSendMessage = useCallback(async () => {
+    if (!chatInput.trim() || !selectedChapter) return;
+    
+    const userMessage: ChatMessage = { role: 'user', content: chatInput };
+    setChatMessages(prev => [...prev, userMessage]);
+    setChatInput('');
+    setIsChatLoading(true);
+    
+    try {
+      const response: string = await generateAIResponse(
+        chatInput,
+        selectedChapter.title,
+        selectedChapter.content,
+        chatMessages.map(m => ({ role: m.role, content: m.content }))
+      );
+      setChatMessages(prev => [...prev, { role: 'ai', content: response }]);
+    } catch (error) {
+      console.error('Chat error:', error);
+    } finally {
+      setIsChatLoading(false);
+    }
+  }, [chatInput, selectedChapter, chatMessages]);
 
   // Reset and load AI content when chapter changes
   useEffect(() => {
-    if (selectedChapter) {
+    if (selectedChapter && dbSync.isSynced) {
       setInsights([]);
       setFirstPrinciples(null);
       setNewsArticles([]);
@@ -112,7 +305,7 @@ export default function AnalyzeBookPage() {
       loadNews(selectedChapter);
       loadDialectic(selectedChapter);
     }
-  }, [selectedChapter]);
+  }, [selectedChapter, dbSync.isSynced, loadInsights, loadNews, loadDialectic]);
 
   // Track reading progress
   useEffect(() => {
@@ -130,92 +323,6 @@ export default function AnalyzeBookPage() {
       return () => contentEl.removeEventListener('scroll', handleScroll);
     }
   }, []);
-
-  const loadInsights = async (chapter: Chapter) => {
-    setIsLoadingInsights(true);
-    try {
-      const insightsData = await generateInsights(
-        chapter.title,
-        chapter.content,
-        chapter.summary || ''
-      );
-      setInsights(insightsData);
-    } catch (error) {
-      console.error('Failed to load insights:', error);
-    } finally {
-      setIsLoadingInsights(false);
-    }
-  };
-
-  const loadFirstPrinciples = async () => {
-    if (!selectedChapter) return;
-    setIsLoadingPrinciples(true);
-    try {
-      const principles = await generateFirstPrinciples(
-        selectedChapter.title,
-        selectedChapter.content,
-        selectedChapter.title
-      );
-      setFirstPrinciples(principles);
-    } catch (error) {
-      console.error('Failed to load first principles:', error);
-    } finally {
-      setIsLoadingPrinciples(false);
-    }
-  };
-
-  const loadNews = async (chapter: Chapter) => {
-    setIsLoadingNews(true);
-    try {
-      const news = await findRelevantNews(chapter.title, chapter.content);
-      setNewsArticles(news);
-    } catch (error) {
-      console.error('Failed to load news:', error);
-    } finally {
-      setIsLoadingNews(false);
-    }
-  };
-
-  const loadDialectic = async (chapter: Chapter) => {
-    if (!book) return;
-    setIsLoadingDialectic(true);
-    try {
-      const analysis = await generateDialecticalAnalysis(
-        chapter.title,
-        chapter.content,
-        book.title,
-        book.author || 'Unknown'
-      );
-      setDialecticAnalysis(analysis);
-    } catch (error) {
-      console.error('Failed to load dialectic analysis:', error);
-    } finally {
-      setIsLoadingDialectic(false);
-    }
-  };
-
-  const handleSendMessage = async () => {
-    if (!chatInput.trim() || !selectedChapter) return;
-    
-    const userMessage: ChatMessage = { role: 'user', content: chatInput };
-    setChatMessages(prev => [...prev, userMessage]);
-    setChatInput('');
-    setIsChatLoading(true);
-    
-    try {
-      const response = await generateAIResponse(
-        chatInput,
-        selectedChapter.title,
-        selectedChapter.content,
-        chatMessages.map(m => ({ role: m.role, content: m.content }))
-      );
-      setChatMessages(prev => [...prev, { role: 'ai', content: response }]);
-    } catch (error) {
-      console.error('Chat error:', error);
-    } finally {
-      setIsChatLoading(false);
-    }
-  };
 
   const handleSelectChapter = (chapter: Chapter) => {
     setSearchParams({ book: bookId || '', chapter: chapter.number.toString() });
@@ -239,12 +346,17 @@ export default function AnalyzeBookPage() {
     }
   };
 
-  if (!book || !selectedChapter) {
+  if (!book || !selectedChapter || dbSync.isLoading) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
         <div className="text-center">
           <Loader2 className="w-10 h-10 text-[#d0ff59] animate-spin mx-auto mb-4" />
-          <p className="text-white/50">Loading book...</p>
+          <p className="text-white/50">
+            {dbSync.isLoading ? 'Syncing book to database...' : 'Loading book...'}
+          </p>
+          {dbSync.isLoading && (
+            <p className="text-white/30 text-sm mt-2">This only happens once per book</p>
+          )}
         </div>
       </div>
     );
@@ -597,12 +709,19 @@ export default function AnalyzeBookPage() {
                         <h3 className="text-white font-semibold flex items-center gap-2">
                           <Sparkles className="w-4 h-4 text-[#d0ff59]" />
                           AI Insights
+                          {dbSync.isSynced && insights.length > 0 && (
+                            <Badge className="bg-emerald-500/20 text-emerald-400 text-xs border-0 ml-2">
+                              <Database className="w-3 h-3 mr-1" />
+                              Saved
+                            </Badge>
+                          )}
                         </h3>
                         <button
                           onClick={() => loadInsights(selectedChapter)}
                           disabled={isLoadingInsights}
-                          className="text-xs text-white/40 hover:text-white transition-colors"
+                          className="text-xs text-white/40 hover:text-white transition-colors flex items-center gap-1"
                         >
+                          <RefreshCw className="w-3 h-3" />
                           {isLoadingInsights ? 'Loading...' : 'Regenerate'}
                         </button>
                       </div>
@@ -616,13 +735,20 @@ export default function AnalyzeBookPage() {
                         <div className="space-y-4">
                           {insights.map((insight, index) => (
                             <motion.div
-                              key={index}
+                              key={insight.id || index}
                               initial={{ opacity: 0, y: 10 }}
                               animate={{ opacity: 1, y: 0 }}
                               transition={{ delay: index * 0.1 }}
                               className="p-4 rounded-xl bg-white/5 border border-white/10 hover:border-[#d0ff59]/30 transition-colors"
                             >
-                              <h4 className="text-white font-medium mb-2">{insight.title}</h4>
+                              <div className="flex items-start justify-between gap-2 mb-2">
+                                <h4 className="text-white font-medium">{insight.title}</h4>
+                                {insight.insight_type && (
+                                  <Badge className="bg-white/10 text-white/60 text-xs border-0 capitalize flex-shrink-0">
+                                    {insight.insight_type.replace('_', ' ')}
+                                  </Badge>
+                                )}
+                              </div>
                               <p className="text-white/60 text-sm mb-3">{insight.summary}</p>
                               <div className="space-y-2">
                                 <div className="p-2 rounded-lg bg-black/30">
@@ -908,7 +1034,7 @@ export default function AnalyzeBookPage() {
                             <p className="text-white/80 text-sm mb-3">{dialecticAnalysis.thesis.statement}</p>
                             <div className="space-y-2">
                               <p className="text-white/50 text-xs uppercase tracking-wider">Key Arguments</p>
-                              {dialecticAnalysis.thesis.keyArguments.map((arg, i) => (
+                              {dialecticAnalysis.thesis.keyArguments.map((arg: string, i: number) => (
                                 <div key={i} className="flex items-start gap-2">
                                   <span className="w-5 h-5 rounded bg-emerald-500/20 flex items-center justify-center text-emerald-400 text-xs flex-shrink-0 mt-0.5">{i + 1}</span>
                                   <p className="text-white/60 text-sm">{arg}</p>
@@ -931,7 +1057,7 @@ export default function AnalyzeBookPage() {
                             {dialecticAnalysis.antithesis.historicalCritics.length > 0 && (
                               <div className="mb-4">
                                 <p className="text-white/50 text-xs uppercase tracking-wider mb-2">Historical Critics</p>
-                                {dialecticAnalysis.antithesis.historicalCritics.map((critic, i) => (
+                                {dialecticAnalysis.antithesis.historicalCritics.map((critic: any, i: number) => (
                                   <div key={i} className="mb-3 p-3 rounded-lg bg-black/30">
                                     <div className="flex items-center gap-2 mb-1">
                                       <span className="text-rose-300 text-sm font-medium">{critic.thinker}</span>
@@ -949,7 +1075,7 @@ export default function AnalyzeBookPage() {
                             {dialecticAnalysis.antithesis.modernCritics.length > 0 && (
                               <div className="mb-4">
                                 <p className="text-white/50 text-xs uppercase tracking-wider mb-2">Modern Critics</p>
-                                {dialecticAnalysis.antithesis.modernCritics.map((critic, i) => (
+                                {dialecticAnalysis.antithesis.modernCritics.map((critic: any, i: number) => (
                                   <div key={i} className="mb-3 p-3 rounded-lg bg-black/30">
                                     <div className="flex items-center gap-2 mb-1">
                                       <span className="text-rose-300 text-sm font-medium">{critic.thinker}</span>
@@ -967,7 +1093,7 @@ export default function AnalyzeBookPage() {
                             {dialecticAnalysis.antithesis.contemporaryDebates.length > 0 && (
                               <div>
                                 <p className="text-white/50 text-xs uppercase tracking-wider mb-2">Contemporary Debates</p>
-                                {dialecticAnalysis.antithesis.contemporaryDebates.map((debate, i) => (
+                                {dialecticAnalysis.antithesis.contemporaryDebates.map((debate: any, i: number) => (
                                   <div key={i} className="mb-2 p-3 rounded-lg bg-black/30">
                                     <p className="text-rose-300 text-sm font-medium mb-1">{debate.topic}</p>
                                     <p className="text-white/60 text-sm">{debate.modernContext}</p>
@@ -990,7 +1116,7 @@ export default function AnalyzeBookPage() {
                               <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
                                 <p className="text-emerald-400 text-xs uppercase tracking-wider mb-2">When Thesis Holds</p>
                                 <ul className="space-y-1">
-                                  {dialecticAnalysis.synthesis.conditionsWhereThesisHolds.map((cond, i) => (
+                                  {dialecticAnalysis.synthesis.conditionsWhereThesisHolds.map((cond: string, i: number) => (
                                     <li key={i} className="text-white/60 text-xs flex items-start gap-1.5">
                                       <CheckCircle2 className="w-3 h-3 text-emerald-400 flex-shrink-0 mt-0.5" />
                                       {cond}
@@ -1001,7 +1127,7 @@ export default function AnalyzeBookPage() {
                               <div className="p-3 rounded-lg bg-rose-500/10 border border-rose-500/20">
                                 <p className="text-rose-400 text-xs uppercase tracking-wider mb-2">When Critics Are Right</p>
                                 <ul className="space-y-1">
-                                  {dialecticAnalysis.synthesis.conditionsWhereCriticsAreRight.map((cond, i) => (
+                                  {dialecticAnalysis.synthesis.conditionsWhereCriticsAreRight.map((cond: string, i: number) => (
                                     <li key={i} className="text-white/60 text-xs flex items-start gap-1.5">
                                       <AlertTriangle className="w-3 h-3 text-rose-400 flex-shrink-0 mt-0.5" />
                                       {cond}
@@ -1028,7 +1154,7 @@ export default function AnalyzeBookPage() {
                               <div>
                                 <p className="text-emerald-400 text-xs uppercase tracking-wider mb-2">If Thesis is True</p>
                                 <div className="space-y-2">
-                                  {dialecticAnalysis.implications.ifThesisTrue.map((imp, i) => (
+                                  {dialecticAnalysis.implications.ifThesisTrue.map((imp: any, i: number) => (
                                     <div key={i} className="flex items-center justify-between p-2 rounded-lg bg-black/30">
                                       <div>
                                         <p className="text-white/70 text-sm">{imp.domain}</p>
@@ -1049,7 +1175,7 @@ export default function AnalyzeBookPage() {
                               <div>
                                 <p className="text-rose-400 text-xs uppercase tracking-wider mb-2">If Critics Are Right</p>
                                 <div className="space-y-2">
-                                  {dialecticAnalysis.implications.ifCriticsRight.map((imp, i) => (
+                                  {dialecticAnalysis.implications.ifCriticsRight.map((imp: any, i: number) => (
                                     <div key={i} className="flex items-center justify-between p-2 rounded-lg bg-black/30">
                                       <div>
                                         <p className="text-white/70 text-sm">{imp.domain}</p>
@@ -1070,7 +1196,7 @@ export default function AnalyzeBookPage() {
                               <div>
                                 <p className="text-amber-400 text-xs uppercase tracking-wider mb-2">Real-World Examples</p>
                                 <div className="space-y-2">
-                                  {dialecticAnalysis.implications.realWorldExamples.map((ex, i) => (
+                                  {dialecticAnalysis.implications.realWorldExamples.map((ex: any, i: number) => (
                                     <div key={i} className="p-3 rounded-lg bg-black/30">
                                       <div className="flex items-center gap-2 mb-1">
                                         <span className={`text-xs px-2 py-0.5 rounded ${

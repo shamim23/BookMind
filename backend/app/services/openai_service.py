@@ -47,47 +47,80 @@ async def call_openai(
 async def generate_insights(
     chapter_title: str,
     chapter_content: str,
-    chapter_summary: str = ""
+    chapter_summary: str = "",
+    book_title: str = "",
+    book_author: str = ""
 ) -> List[dict]:
-    """Generate 3-5 critical insights from chapter content."""
-    prompt = f"""Extract the 3-5 most critical insights from this chapter. 
+    """Generate pedagogically powerful insights from chapter content."""
+    
+    prompt = f"""You are a master teacher who helps students understand complex books deeply. Your goal is to extract insights that create "aha!" moments - the kind of understanding that stays with someone for years.
 
-Chapter Title: {chapter_title}
-Chapter Summary: {chapter_summary}
-Chapter Content: {chapter_content[:8000]}
+## CHAPTER CONTEXT
+Book: "{book_title}" by {book_author}
+Chapter: "{chapter_title}"
+Summary: {chapter_summary}
 
-For each insight, provide in this exact JSON format:
-{{
-  "insights": [
-    {{
-      "title": "Short, punchy title (5-8 words)",
-      "summary": "One-sentence summary of the insight",
-      "evidence": "Specific evidence from the text supporting this insight (1-2 sentences)",
-      "implication": "One real-world implication or application of this insight"
-    }}
-  ]
-}}
+## CHAPTER CONTENT
+{chapter_content[:8000]}
 
-Focus on insights that are:
-- Counterintuitive or surprising
-- Fundamentally important to understanding the topic
-- Have practical applications
+## YOUR TASK
+Extract 3-5 insights from this chapter. Each insight should:
+1. **Distill a core principle** - Not a fact, but a transferable idea
+2. **Be surprising to a novice** - Challenge common misconceptions
+3. **Have concrete textual support** - Directly tied to author's arguments
+4. **Apply beyond this book** - Useful in other domains/contexts
 
-Respond ONLY with valid JSON, no markdown formatting."""
+## INSIGHT TYPES (mix these)
+- **Pattern**: A recurring structure or mechanism (e.g., "Positive feedback loops amplify small differences")
+- **Causal mechanism**: How/why something happens (e.g., "Division of labor increases output through specialization, not just more effort")
+- **Distinction**: A crucial difference people conflate (e.g., "Wealth of a nation ≠ gold reserves, but productive capacity")
+- **Counter-intuitive truth**: What most people get wrong (e.g., "More information can worsen decisions by overwhelming System 2")
+- **Framework**: A mental model for categorizing (e.g., "Fast vs Slow thinking as distinct cognitive systems")
+
+## OUTPUT FORMAT
+Return valid JSON only:
+{{"insights": [{{"title": "Punchy, memorable phrase (5-10 words, noun phrase or statement)","summary": "The core idea in 1 sentence. What should the student remember?","evidence": "Specific argument, example, or quote from the text that supports this (1-2 sentences)","implication": "Real-world application. How does understanding this change decisions or perspective?","insight_type": "pattern|causal|distinction|counter_intuitive|framework"}}]}}
+
+## EXAMPLES OF GOOD INSIGHTS
+
+BAD: "Division of labor is important"
+GOOD: "Division of Labor Creates Multiplicative, Not Additive Gains"
+- Evidence: "Smith's pin factory example shows 10 workers producing 48,000 pins/day vs 200 pins if working alone - the gains are 240x, not 10x"
+- Implication: "When organizing teams, focus on task specialization rather than just adding more people doing the same work"
+
+BAD: "People have biases"
+GOOD: "Cognitive Biases Are Systematic, Not Random Errors"
+- Evidence: "Kahneman shows biases like anchoring affect experts and novices predictably, suggesting they're hardwired features of System 1"
+- Implication: "You can't eliminate bias through 'trying harder' - you need systems, checklists, and external validation"
+
+## CONSTRAINTS
+- Titles should be noun phrases or short statements that work as concept labels
+- Avoid: "The author discusses...", "This chapter covers..." (too meta)
+- Avoid: Generic summaries like "Communication is important"
+- Each insight should feel like a "lens" the student can apply to new situations
+
+Respond with JSON only. No markdown code blocks."""
 
     try:
         response = await call_openai(
             messages=[
-                {"role": "system", "content": "You are an expert at extracting deep insights from educational content. You respond only with valid JSON."},
+                {"role": "system", "content": "You are a master teacher who creates 'aha!' moments by extracting transferable, counter-intuitive insights from complex texts."},
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.5,
+            temperature=0.6,
+            max_tokens=2500,
         )
         
         # Clean up the response to ensure valid JSON
         cleaned = response.replace("```json\n", "").replace("\n```", "").replace("```", "").strip()
         parsed = json.loads(cleaned)
-        return parsed.get("insights", [])
+        insights = parsed.get("insights", [])
+        
+        # Ensure each insight has required fields
+        for insight in insights:
+            insight.setdefault("insight_type", "pattern")
+        
+        return insights
     except Exception as e:
         print(f"Failed to generate insights: {e}")
         # Return fallback insight
@@ -95,7 +128,8 @@ Respond ONLY with valid JSON, no markdown formatting."""
             "title": "Core Concept Identified",
             "summary": "The chapter presents fundamental principles that form the foundation of this subject.",
             "evidence": "Key arguments and examples throughout the text support this understanding.",
-            "implication": "These principles can be applied to analyze and understand related phenomena in the real world."
+            "implication": "These principles can be applied to analyze and understand related phenomena in the real world.",
+            "insight_type": "pattern"
         }]
 
 

@@ -86,3 +86,14 @@ export interface FAQItem {
   question: string;
   answer: string;
 }
+
+export interface Insight {
+  id?: string;
+  title: string;
+  summary: string;
+  evidence: string;
+  implication: string;
+  insight_type?: 'pattern' | 'causal' | 'distinction' | 'counter_intuitive' | 'framework';
+  created_at?: string;
+  is_ai_generated?: boolean;
+}

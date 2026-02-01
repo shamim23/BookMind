@@ -88,58 +88,86 @@ def extract_text_from_file(file_content: bytes, filename: str) -> str:
 
 def analyze_book_content(text: str) -> dict:
     """Analyze book content and extract structure."""
-    # Simple chapter detection based on common patterns
-    chapter_patterns = [
-        r'(?:Chapter|CHAPTER)\s+(\d+|[IVX]+)[:\s]*([^\n]+)?',
-        r'^(\d+)\.\s+([^\n]+)$',  # "1. Chapter Title"
-        r'^#{1,2}\s+([^\n]+)$',    # Markdown headers
-    ]
-    
-    chapters = []
     lines = text.split('\n')
+    chapters = []
     current_chapter = None
     chapter_content = []
     chapter_num = 0
+    intro_content = []  # Content before first numbered chapter
+    found_first_numbered_chapter = False
     
     for line in lines:
         found_chapter = False
+        line_stripped = line.strip()
         
-        for pattern in chapter_patterns:
-            match = re.match(pattern, line.strip())
-            if match:
-                # Save previous chapter
-                if current_chapter:
-                    current_chapter["content"] = '\n\n'.join(chapter_content)
-                    chapters.append(current_chapter)
-                
-                # Start new chapter
+        # Look for explicit "Chapter X" patterns (with or without markdown)
+        # Handle: "Chapter 1: Title", "## Chapter 1: Title", "# Chapter 1"
+        chapter_match = re.match(r'(?:Chapter|CHAPTER)\s+(\d+|[IVX]+)[:\s]*([^\n]+)?', line_stripped)
+        if not chapter_match:
+            # Try with markdown prefix
+            chapter_match = re.match(r'^#+\s+(?:Chapter|CHAPTER)\s+(\d+|[IVX]+)[:\s]*([^\n]+)?', line_stripped)
+        
+        if chapter_match:
+            # This is a numbered chapter (e.g., "Chapter 1")
+            found_first_numbered_chapter = True
+            
+            # Save any intro content as Chapter 1 before the first numbered chapter
+            if intro_content and not chapters and not current_chapter:
                 chapter_num += 1
-                if len(match.groups()) > 1:
-                    title = match.group(2).strip() if match.group(2) else f"Chapter {chapter_num}"
-                else:
-                    title = match.group(1).strip()
-                
-                current_chapter = {
+                chapters.append({
                     "id": f"chapter-{chapter_num}",
                     "number": chapter_num,
-                    "title": title,
-                    "content": "",
+                    "title": "Introduction",
+                    "content": '\n\n'.join(intro_content).strip(),
                     "keyPoints": [],
                     "concepts": []
-                }
-                chapter_content = []
-                found_chapter = True
-                break
+                })
+                intro_content = []
+            # Or save previous chapter if exists
+            elif current_chapter:
+                current_chapter["content"] = '\n\n'.join(chapter_content).strip()
+                chapters.append(current_chapter)
+            
+            # Start new numbered chapter
+            chapter_num += 1
+            title = chapter_match.group(2).strip() if chapter_match.group(2) else f"Chapter {chapter_match.group(1)}"
+            
+            current_chapter = {
+                "id": f"chapter-{chapter_num}",
+                "number": chapter_num,
+                "title": title,
+                "content": "",
+                "keyPoints": [],
+                "concepts": []
+            }
+            chapter_content = []
+            found_chapter = True
         
-        if not found_chapter and current_chapter:
-            chapter_content.append(line)
+        # Collect content
+        if not found_chapter:
+            if current_chapter:
+                chapter_content.append(line)
+            else:
+                intro_content.append(line)
     
     # Save last chapter
     if current_chapter:
-        current_chapter["content"] = '\n\n'.join(chapter_content)
+        current_chapter["content"] = '\n\n'.join(chapter_content).strip()
         chapters.append(current_chapter)
     
-    # If no chapters found, treat entire text as one chapter
+    # If we have intro content but no chapters, create a single chapter
+    if intro_content and not chapters:
+        chapter_num += 1
+        chapters.append({
+            "id": f"chapter-{chapter_num}",
+            "number": chapter_num,
+            "title": "Full Text",
+            "content": '\n\n'.join(intro_content).strip(),
+            "keyPoints": [],
+            "concepts": []
+        })
+    
+    # If still no chapters, treat entire text as one chapter
     if not chapters:
         chapters = [{
             "id": "chapter-1",

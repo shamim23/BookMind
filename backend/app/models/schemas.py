@@ -41,10 +41,14 @@ class Book(BaseModel):
 # ==================== AI Analysis Models ====================
 
 class Insight(BaseModel):
+    id: Optional[str] = None
     title: str
     summary: str
     evidence: str
     implication: str
+    insight_type: str = "pattern"  # pattern, causal, distinction, counter_intuitive, framework
+    created_at: Optional[datetime] = None
+    is_ai_generated: bool = True
 
 
 class FirstPrinciple(BaseModel):
@@ -201,6 +205,11 @@ class GenerateInsightsRequest(BaseModel):
     chapter_title: str
     chapter_content: str
     chapter_summary: str = ""
+    book_title: str = ""
+    book_author: str = ""
+    book_id: Optional[str] = None  # For saving to DB
+    chapter_id: Optional[str] = None  # For saving to DB
+    save_to_db: bool = True  # Whether to save the generated insights
 
 
 class GenerateFirstPrinciplesRequest(BaseModel):
@@ -232,6 +241,49 @@ class GetEvidenceRequest(BaseModel):
 class FindNewsRequest(BaseModel):
     chapter_title: str
     chapter_content: str
+
+
+# ==================== Insight Storage Models ====================
+
+class SavedInsightResponse(BaseModel):
+    """Response model for a saved insight."""
+    id: str
+    book_id: str
+    chapter_id: str
+    title: str
+    summary: str
+    evidence: str
+    implication: str
+    insight_type: str
+    ai_model: Optional[str] = None
+    created_at: datetime
+    is_ai_generated: bool
+    
+    class Config:
+        from_attributes = True
+
+
+class InsightsListResponse(BaseModel):
+    """Response for listing insights."""
+    insights: List[SavedInsightResponse]
+    total: int
+    chapter_id: str
+
+
+class UpdateInsightRequest(BaseModel):
+    """Request to update an insight."""
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    evidence: Optional[str] = None
+    implication: Optional[str] = None
+    insight_type: Optional[str] = None
+
+
+class DeleteInsightResponse(BaseModel):
+    """Response after deleting an insight."""
+    success: bool
+    message: str
+    deleted_id: Optional[str] = None
 
 
 # ==================== Sample Book Models ====================
